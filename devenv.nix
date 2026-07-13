@@ -1,46 +1,81 @@
-{ pkgs, lib, config, inputs, ... }:
-
 {
-  # https://devenv.sh/basics/
-  env.GREET = "devenv";
+  pkgs,
+  lib,
+  config,
+  ...
+}: {
+  # --- 1. LANGUAGES ---
+  languages.php = {
+    enable = true;
+    extensions = ["mysqli" "gd" "intl" "mbstring" "zip"];
+    fpm.pools.web = {
+      listen = "127.0.0.1:9000";
+      settings = {
+        "pm" = "dynamic";
+        "pm.max_children" = 5;
+        "pm.start_servers" = 2;
+        "pm.min_spare_servers" = 1;
+        "pm.max_spare_servers" = 3;
+      };
+    };
+  };
 
-  # https://devenv.sh/packages/
-  packages = [ pkgs.git ];
+  # --- 2. SERVICES ---
+  # MariaDB Database
+  services.mysql = {
+    enable = true;
+    initialDatabases = [{name = "wordpress";}];
+    ensureUsers = [
+      {
+        name = "wordpress";
+        password = "password";
+        ensurePermissions = {
+          "wordpress.*" = "ALL PRIVILEGES";
+        };
+      }
+    ];
+  };
 
-  # https://devenv.sh/languages/
-  # languages.rust.enable = true;
+  # Caddy Web Server
+  services.caddy = {
+    enable = true;
+    virtualHosts."http://localhost:8080" = {
+      extraConfig = ''
+        # UPDATED: Point Caddy directly to your existing "wordpress" folder
+        root * ${config.env.DEVENV_ROOT}/public
+        php_fastcgi 127.0.0.1:9000
+        file_server
+      '';
+    };
+  };
 
-  # https://devenv.sh/processes/
-  # processes.dev.exec = "${lib.getExe pkgs.watchexec} -n -- ls -la";
+  # --- 3. TASKS ---
+  tasks = {
+    "wordpress:setup" = {
+      exec = ''
+        cd public
 
-  # https://devenv.sh/services/
-  # services.postgres.enable = true;
+        # We skip downloading since you already have the files.
+        # Just check if wp-config.php needs to be generated.
+        if [ ! -f "wp-config.php" ]; then
+          echo "Generating wp-config.php..."
+          wp config create \
+            --dbname=wordpress \
+            --dbuser=wordpress \
+            --dbpass=password \
+            --dbhost=127.0.0.1 \
+            --skip-salts
+        else
+          echo "wp-config.php already exists. Database connection ready!"
+        fi
+      '';
+      before = ["devenv:enterShell"];
+    };
+  };
 
-  # https://devenv.sh/scripts/
-  scripts.hello.exec = ''
-    echo hello from $GREET
-  '';
-
-  # https://devenv.sh/basics/
-  enterShell = ''
-    hello         # Run scripts directly
-    git --version # Use packages
-  '';
-
-  # https://devenv.sh/tasks/
-  # tasks = {
-  #   "myproj:setup".exec = "mytool build";
-  #   "devenv:enterShell".after = [ "myproj:setup" ];
-  # };
-
-  # https://devenv.sh/tests/
-  enterTest = ''
-    echo "Running tests"
-    git --version | grep --color=auto "${pkgs.git.version}"
-  '';
-
-  # https://devenv.sh/git-hooks/
-  # git-hooks.hooks.shellcheck.enable = true;
-
-  # See full reference at https://devenv.sh/reference/options/
+  # --- 4. PACKAGES ---
+  packages = [
+    pkgs.phpPackages.composer
+    pkgs.wp-cli
+  ];
 }
