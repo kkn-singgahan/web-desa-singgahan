@@ -21,27 +21,17 @@
   };
 
   # --- 2. SERVICES ---
-  # MariaDB Database
   services.mysql = {
     enable = true;
-    initialDatabases = [{name = "wordpress";}];
-    ensureUsers = [
-      {
-        name = "wordpress";
-        password = "password";
-        ensurePermissions = {
-          "wordpress.*" = "ALL PRIVILEGES";
-        };
-      }
-    ];
+    package = pkgs.mariadb;
+    # Don't rely on initialDatabases/ensureUsers due to bug #2902
+    # Use a process to set up DB and user instead
   };
 
-  # Caddy Web Server
   services.caddy = {
     enable = true;
     virtualHosts."http://localhost:8080" = {
       extraConfig = ''
-        # UPDATED: Point Caddy directly to your existing "wordpress" folder
         root * ${config.env.DEVENV_ROOT}/public
         php_fastcgi 127.0.0.1:9000
         file_server
@@ -49,14 +39,26 @@
     };
   };
 
-  # --- 3. TASKS ---
+  # --- 3. PROCESSES ---
+  # Workaround for bug #2902: manually create DB and user after MySQL starts
+  processes.mysql-setup = {
+    exec = ''
+      sleep 5
+      ${pkgs.mariadb}/bin/mysql -uroot -e "CREATE DATABASE IF NOT EXISTS wordpress;" 2>/dev/null || true
+      ${pkgs.mariadb}/bin/mysql -uroot -e "CREATE USER IF NOT EXISTS 'wordpress'@'localhost' IDENTIFIED BY 'password';" 2>/dev/null || true
+      ${pkgs.mariadb}/bin/mysql -uroot -e "GRANT ALL PRIVILEGES ON wordpress.* TO 'wordpress'@'localhost';" 2>/dev/null || true
+      ${pkgs.mariadb}/bin/mysql -uroot -e "FLUSH PRIVILEGES;" 2>/dev/null || true
+      echo "MySQL setup complete"
+      # Keep process alive so devenv doesn't restart it
+      ${pkgs.coreutils}/bin/sleep infinity
+    '';
+  };
+
+  # --- 4. TASKS ---
   tasks = {
     "wordpress:setup" = {
       exec = ''
         cd public
-
-        # We skip downloading since you already have the files.
-        # Just check if wp-config.php needs to be generated.
         if [ ! -f "wp-config.php" ]; then
           echo "Generating wp-config.php..."
           wp config create \
@@ -66,14 +68,14 @@
             --dbhost=127.0.0.1 \
             --skip-salts
         else
-          echo "wp-config.php already exists. Database connection ready!"
+          echo "wp-config.php already exists."
         fi
       '';
       before = ["devenv:enterShell"];
     };
   };
 
-  # --- 4. PACKAGES ---
+  # --- 5. PACKAGES ---
   packages = [
     pkgs.phpPackages.composer
     pkgs.wp-cli
